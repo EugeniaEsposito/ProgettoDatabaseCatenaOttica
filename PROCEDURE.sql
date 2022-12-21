@@ -1,0 +1,337 @@
+-- PROCEDURA 1: Prenotazione visita oculistica (gestore clienti)
+CREATE OR REPLACE PROCEDURE prenotazione(telefono_inserito CHAR,data_inserita DATE, Citta CHAR, Matricola CHAR) 
+IS
+
+NUM_PRE  			INTEGER;
+NUM 				INTEGER;
+SLOT_DISP			DATE;
+MAX_SEI 			EXCEPTION;
+PRENOTATO 			EXCEPTION;
+FUORI_ORARIO			EXCEPTION;
+
+BEGIN
+
+INSERT INTO VISITA_OCULISTICA_PRENOTATA values (telefono_inserito,SYSDATE);
+INSERT INTO VISITA_OCULISTICA_EFFETTUATA values (Matricola,data_inserita,NULL,telefono_inserito,SYSDATE);
+
+SELECT COUNT(*) INTO NUM_PRE
+FROM ((VISITA_OCULISTICA_PRENOTATA VP JOIN VISITA_OCULISTICA_EFFETTUATA VE ON VE.data_ora_visita_pren = VP.data_ora) JOIN DIPENDENTE D ON D.MATRICOLA = VE.MATRICOLA_OCULISTA)
+WHERE trunc(to_date(ve.data_ora_inizio)) = trunc(to_date(data_inserita)) AND d.CITTA_PV=CITTA;
+
+SELECT COUNT(*) INTO NUM
+FROM VISITA_OCULISTICA_EFFETTUATA
+WHERE TEL_CLIENTE=telefono_inserito AND 
+to_date(DATA_ORA_VISITA_PREN)>=to_date(SYSDATE);
+
+/* Nella query sottostante abbiamo trovato il primo slot disponibile per effettuare una visita dalle ore 9 alle 18 di ogni giorno, esclusi i giorni pari, sabato e domenica, nel caso in cui il giorno scelto dall’utente sia pieno. */
+
+SELECT * INTO SLOT_DISP
+FROM(
+	(SELECT TRUNC(data_inserita,'HH24') + (ROWNUM/24)
+	FROM (SELECT ROWNUM FROM DUAL CONNECT BY ROWNUM < 11)
+	WHERE (((TRUNC(data_inserita,'HH24') + (ROWNUM/24)) BETWEEN ((TRUNC(data_inserita)+9/24)) AND ((TRUNC(data_inserita)+17/24))))
+	AND (TO_CHAR(data_inserita, 'D') = 1 OR TO_CHAR(data_inserita, 'D') = 3 OR TO_CHAR(data_inserita, 'D') = 5) AND TRUNC(data_inserita) 
+	NOT IN 	(SELECT TRUNC(DATA_ORA_INIZIO)
+		FROM VISITA_OCULISTICA_EFFETTUATA 
+		GROUP BY TRUNC(DATA_ORA_INIZIO)
+		HAVING COUNT(*) > 6)
+	UNION
+	SELECT TRUNC(data_inserita+1) + ((8+ROWNUM)/24)
+	FROM (SELECT ROWNUM FROM DUAL CONNECT BY ROWNUM < 11)
+	WHERE (((TRUNC(data_inserita+1) + ((8+ROWNUM)/24)) BETWEEN ((TRUNC(data_inserita+1)+9/24)) AND ((TRUNC(data_inserita+1)+17/24))))
+	AND (TO_CHAR(data_inserita+1, 'D') = 1 OR TO_CHAR(data_inserita+1, 'D') = 3 OR TO_CHAR(data_inserita+1, 'D') = 5) AND TRUNC(data_inserita+1) 
+	NOT IN 	(SELECT TRUNC(DATA_ORA_INIZIO)					
+		FROM VISITA_OCULISTICA_EFFETTUATA					
+		GROUP BY TRUNC(DATA_ORA_INIZIO)
+		HAVING COUNT(*) > 6)
+	UNION
+	SELECT TRUNC(data_inserita+2) + ((8+ROWNUM)/24)
+	FROM (SELECT ROWNUM FROM DUAL CONNECT BY ROWNUM < 11)
+	WHERE (((TRUNC(data_inserita+2) + ((8+ROWNUM)/24)) BETWEEN ((TRUNC(data_inserita+2)+9/24)) AND ((TRUNC(data_inserita+2)+17/24))))
+	AND (TO_CHAR(data_inserita+2, 'D') = 1 OR TO_CHAR(data_inserita+2, 'D') = 3 OR TO_CHAR(data_inserita+2, 'D') = 5) AND TRUNC(data_inserita+2) 
+	NOT IN 	(SELECT TRUNC(DATA_ORA_INIZIO) 
+		FROM VISITA_OCULISTICA_EFFETTUATA 
+		GROUP BY TRUNC(DATA_ORA_INIZIO)
+		HAVING COUNT(*) > 6)
+	UNION
+	SELECT TRUNC(data_inserita+3) + ((8+ROWNUM)/24)
+	FROM (SELECT ROWNUM FROM DUAL CONNECT BY ROWNUM < 11)
+	WHERE (((TRUNC(data_inserita+3) + ((8+ROWNUM)/24)) BETWEEN ((TRUNC(data_inserita+3)+9/24)) AND ((TRUNC(data_inserita+3)+17/24))))
+	AND (TO_CHAR(data_inserita+3, 'D') = 1 OR TO_CHAR(data_inserita+3, 'D') = 3 OR TO_CHAR(data_inserita+3, 'D') = 5) AND TRUNC(data_inserita+3)
+ 	NOT IN 	(SELECT TRUNC(DATA_ORA_INIZIO) 
+		FROM VISITA_OCULISTICA_EFFETTUATA					
+		GROUP BY TRUNC(DATA_ORA_INIZIO)
+		HAVING COUNT(*) > 6))
+	MINUS
+	SELECT TRUNC(DATA_ORA_INIZIO,'HH24')
+	FROM ((VISITA_OCULISTICA_PRENOTATA VP JOIN VISITA_OCULISTICA_EFFETTUATA VE ON VP.DATA_ORA=VE.DATA_ORA_VISITA_PREN) JOIN DIPENDENTE D
+	ON D.MATRICOLA=VE.MATRICOLA_OCULISTA)
+	WHERE DATA_ORA_INIZIO BETWEEN data_inserita AND (data_inserita+4) AND Citta_PV = Citta)
+WHERE ROWNUM<=1;
+
+IF NUM>1 THEN
+RAISE PRENOTATO;
+END IF;
+
+IF data_inserita NOT BETWEEN (TRUNC(data_inserita)+9/24) AND (TRUNC(data_inserita)+17/24) THEN
+RAISE FUORI_ORARIO;
+END IF;
+
+IF NUM_PRE > 6 THEN 
+RAISE MAX_SEI;
+END IF;
+
+COMMIT;
+
+EXCEPTION
+WHEN PRENOTATO THEN
+RAISE_APPLICATION_ERROR (-20355,'Gia'' ti sei prenotato');
+
+WHEN FUORI_ORARIO THEN
+RAISE_APPLICATION_ERROR(-20356,'Orario inserito errato: le visite oculistiche si effettuano dalle 9 alle 17');
+
+WHEN MAX_SEI THEN
+UPDATE VISITA_OCULISTICA_EFFETTUATA SET DATA_ORA_INIZIO= SLOT_DISP WHERE MATRICOLA_OCULISTA=Matricola AND DATA_ORA_INIZIO=data_inserita;
+DBMS_OUTPUT.PUT_LINE('Per questa giornata si e'' raggiunto il numero massimo di prenotazioni - SEI. Cosi'' la visita e'' stata spostata automaticamente al primo orario disponibile, cioe'': '||SLOT_DISP);
+
+END;
+/
+
+
+-- PROCEDURA 2: Chiusura dell’ordine calcolando lo sconto (gestore clienti)
+CREATE OR REPLACE PROCEDURE calcolo_sconto(N_ordine VARCHAR, Matricola VARCHAR, Prescrizione VARCHAR, Anticipo_ord NUMBER, Sconto_ord VARCHAR, Prezzo_tot NUMBER, Codice_lente CHAR, Codice_montatura CHAR)
+IS
+
+ESISTE		NUMBER;
+NUM_ACQUISTI 	NUMBER;
+PREZZO_MONT	NUMBER;
+
+BEGIN
+
+SELECT COUNT(*) INTO ESISTE
+FROM Ordine O
+Where Numero_ordine = N_Ordine;  
+
+IF ESISTE=0 THEN
+INSERT INTO ORDINE values (N_Ordine,Matricola,SYSDATE,Prescrizione,Sconto_ord,Prezzo_tot,Anticipo_ord);
+INSERT INTO E_COMPOSTO values (N_Ordine,Codice_lente,Codice_montatura);
+ELSE
+INSERT INTO E_COMPOSTO values (N_Ordine,Codice_lente,Codice_montatura);
+UPDATE Ordine SET Prezzo_totale = Prezzo_tot WHERE Numero_ordine= N_Ordine;
+END IF;
+
+SELECT COUNT(*) INTO NUM_ACQUISTI
+FROM E_COMPOSTO
+WHERE NUMERO_ORD=N_Ordine;
+
+IF NUM_ACQUISTI = 3 AND Codice_montatura IS NOT NULL THEN
+SELECT MIN(PREZZO_VENDITA) INTO PREZZO_MONT
+FROM PRODOTTO P JOIN  E_COMPOSTO E ON P.CODICE_A_BARRE=E.COD_BARRE_MONT
+WHERE NUMERO_ORD=N_Ordine;
+PREZZO_MONT:=PREZZO_MONT/2;
+UPDATE Ordine SET Prezzo_totale = Prezzo_totale - PREZZO_MONT WHERE Numero_ordine= N_Ordine;
+DBMS_OUTPUT.PUT_LINE('E'' stata aggiunta all''ordine una terza montatura, cosi'' quella piu'' economica e'' stata scontata del 50%, cioe'' e'' stata pagata '||Prezzo_mont||' invece di '|| Prezzo_mont*2);
+END IF;
+
+END;
+/
+
+
+-- PROCEDURA 3: Cancellazione automatica di dati obsoleti (admin)
+CREATE OR REPLACE PROCEDURE pulizia_memoria
+IS
+
+Conta_visite_eff 	NUMBER;
+Conta_visite_pren 	NUMBER;
+Conta_rispetta		NUMBER;
+Conta_appr		NUMBER;
+Conta_forn		NUMBER;
+
+BEGIN
+
+SELECT COUNT(*) INTO Conta_visite_eff 
+FROM VISITA_OCULISTICA_EFFETTUATA;
+
+IF Conta_visite_eff > 1000 THEN
+DELETE FROM VISITA_OCULISTICA_EFFETTUATA WHERE TO_DATE(DATA_ORA_INIZIO, 'DD/MON/YYYY') < (SYSDATE-365);
+DBMS_OUTPUT.PUT_LINE('OPERAZIONE ESEGUITA ---- VISITE OCULISTICHE EFFETTUATE CANCELLATE');
+COMMIT;
+END IF;
+
+SELECT COUNT(*) INTO Conta_visite_pren
+FROM VISITA_OCULISTICA_PRENOTATA;
+
+IF  Conta_visite_pren>1000 THEN
+DELETE FROM VISITA_OCULISTICA_PRENOTATA WHERE TO_DATE(DATA_ORA, 'DD/MON/YYYY') < (SYSDATE-365);
+DBMS_OUTPUT.PUT_LINE('OPERAZIONE ESEGUITA ---- VISITE OCULISTICHE PRENOTATE CANCELLATE');
+COMMIT;
+END IF;
+
+SELECT COUNT(*) INTO Conta_rispetta
+FROM RISPETTA;
+
+IF Conta_rispetta>1000 THEN
+DELETE FROM RISPETTA WHERE TO_DATE(DATA_ORA_INGRESSO, 'DD/MON/YYYY')< (SYSDATE-365);
+DBMS_OUTPUT.PUT_LINE('OPERAZIONE ESEGUITA ---- RISPETTA CANCELLATO');
+COMMIT;
+END IF;
+
+/*DA QUI IN POI FACCIAMO IN MODO DI ELIMINARE TUTTI I PRODOTTI, QUINDI GLI APPROVVIGIONAMENTI E LE FORNITURE PIU’ VECCHI DI 5 ANNI PERCHE’ FUORI MERCATO O USURATI */ 
+
+SELECT COUNT(*) INTO Conta_appr
+FROM APPROVVIGIONAMENTO
+WHERE DATA_ORA_PARTENZA_APP<(SYSDATE-1825); 
+
+IF  Conta_appr>1 THEN
+DELETE FROM APPROVVIGIONAMENTO WHERE  DATA_ORA_PARTENZA_APP<(SYSDATE-1825);
+DBMS_OUTPUT.PUT_LINE('OPERAZIONE ESEGUITA ---- APPROVVIGIONAMENTI PIU'' VECCHI DI 5 ANNI CANCELLATI---');
+COMMIT;
+END IF;
+
+SELECT COUNT(*) INTO Conta_forn
+FROM Fornitura
+WHERE DATA_ORA_PARTENZA<(SYSDATE-1825); 
+
+IF Conta_forn>1 THEN
+DELETE FROM FORNITURA WHERE DATA_ORA_PARTENZA<(SYSDATE-1825);
+DBMS_OUTPUT.PUT_LINE('OPERAZIONE ESEGUITA ---- FORNITURE PIU'' VECCHIE DI 5 ANNI CANCELLATE---');
+COMMIT;
+END IF;
+
+END;
+/
+
+
+-- PROCEDURA 4: Invia forniture con prodotti più venduti (gestore fornitori)
+CREATE OR REPLACE PROCEDURE rif_top(cod_forn VARCHAR2, p_iva CHAR, mat_imp VARCHAR2, data_p DATE, data_a DATE, costo NUMBER, corriere VARCHAR2, quantita NUMBER)
+IS
+
+COD_PRIMA_LENTE    	CHAR(13);
+COD_PRIMA_MONT    	CHAR(13);
+COUNT1 			NUMBER(15);
+COUNT2 			NUMBER(15);
+
+BEGIN
+
+--LENTE
+SELECT DISTINCT COUNT(COD_BARRE_LENTE), FIRST_VALUE(COD_BARRE_LENTE)
+OVER ( ORDER BY COD_BARRE_LENTE DESC
+RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)
+AS CODICE_LENTI INTO COUNT1, COD_PRIMA_LENTE
+FROM ((E_COMPOSTO EC JOIN ORDINE O ON EC.NUMERO_ORD=O.NUMERO_ORDINE)JOIN CONSEGNA C ON O.NUMERO_ORDINE=C.NUMERO_ORD)
+WHERE DATA>(SYSDATE-365)
+GROUP BY COD_BARRE_LENTE
+HAVING COUNT(COD_BARRE_LENTE)=
+	(	SELECT MAX(NUM)
+		FROM 	(SELECT COD_BARRE_LENTE,COUNT(*) AS 			NUM
+			FROM ((E_COMPOSTO EC JOIN ORDINE O ON EC.NUMERO_ORD=O.NUMERO_ORDINE)JOIN CONSEGNA C ON O.NUMERO_ORDINE=C.NUMERO_ORD )
+			GROUP BY COD_BARRE_LENTE)
+	);
+
+ --MONTATURA
+SELECT DISTINCT COUNT(COD_BARRE_MONT), FIRST_VALUE(COD_BARRE_MONT)
+OVER ( ORDER BY COD_BARRE_MONT DESC
+RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)
+AS CODICE_MONTATURE INTO COUNT2, COD_PRIMA_MONT
+FROM ((E_COMPOSTO EC JOIN ORDINE O ON EC.NUMERO_ORD=O.NUMERO_ORDINE)JOIN CONSEGNA C ON O.NUMERO_ORDINE=C.NUMERO_ORD)
+WHERE DATA>(SYSDATE-365)
+GROUP BY COD_BARRE_MONT
+HAVING COUNT(COD_BARRE_MONT)=
+	(	SELECT MAX(NUM)
+		FROM (	SELECT COD_BARRE_MONT,COUNT(*) AS      		NUM
+			FROM ((E_COMPOSTO EC JOIN ORDINE O ON EC.NUMERO_ORD=O.NUMERO_ORDINE)JOIN CONSEGNA C ON O.NUMERO_ORDINE=C.NUMERO_ORD )
+			GROUP BY COD_BARRE_MONT)
+	);
+
+INSERT INTO FORNITURA VALUES (cod_forn,p_iva,mat_imp,data_p,data_a,costo,corriere);
+INSERT INTO INCLUDE VALUES (cod_forn,cod_prima_mont,quantita);
+INSERT INTO INCLUDE VALUES (cod_forn,cod_prima_lente,quantita);
+
+DBMS_OUTPUT.PUT_LINE('OPERAZIONE ESEGUITA ---- FORNITURA DI PRODOTTI PIU'' VENDUTI INSERITA');
+DBMS_OUTPUT.PUT_LINE('LE MONTATURE INSERITE PIU'' VENDUTE IN UN ANNO SONO: ' ||COD_PRIMA_MONT );
+DBMS_OUTPUT.PUT_LINE('LE LENTI INSERITE PIU'' VENDUTE IN UN ANNO SONO: ' ||COD_PRIMA_LENTE );
+
+COMMIT;
+END;
+/
+
+
+-- PROCEDURA 5: Promozione del dipendente: passa da determinato a indeterminato se è il quarto contratto che stipula di tipo determinato (admin)
+CREATE OR REPLACE PROCEDURE promozione(matricola VARCHAR2, data DATE, stipendio NUMBER, scadenza DATE, tipo VARCHAR2, durata VARCHAR2)
+IS
+
+CONTA_CONTRATTI 	NUMBER;
+
+BEGIN
+
+INSERT INTO CONTRATTO VALUES (matricola,data,stipendio,scadenza,tipo,durata);
+
+DBMS_OUTPUT.PUT_LINE('Contratto inserito correttamente!');
+
+SELECT COUNT(*) INTO CONTA_CONTRATTI
+FROM Contratto
+WHERE Matricola_dipendente = matricola AND TIPO= 'DETERMINATO'
+GROUP BY Matricola_dipendente;
+
+IF CONTA_CONTRATTI = 4 AND TIPO != 'INDETERMINATO' THEN
+UPDATE contratto SET tipo = 'INDETERMINATO', scadenza = null WHERE Matricola_dipendente = matricola AND DATA_ASSUNZIONE= data;
+DBMS_OUTPUT.PUT_LINE('Siamo al 4° contratto di tipo determinato per questo dipendente, cosi'' il tipo contratto e'' stato modificato da determinato a indeterminato.');
+COMMIT;
+END IF;
+
+END;
+/
+
+
+-- PROCEDURA 6: Bonus stipendio per dipendenti diligenti (admin)
+CREATE OR REPLACE PROCEDURE bonus_stipendio
+IS
+
+Matricola_270 		VARCHAR2(5);
+Matricola_punt 		VARCHAR2(5);
+
+CURSOR C1
+IS
+	SELECT Matricola_DIP
+	FROM RISPETTA
+	WHERE DATA_ORA_INGRESSO>SYSDATE-365
+	GROUP BY MATRICOLA_DIP
+	HAVING COUNT(*)>270;
+
+CURSOR C2
+IS
+	SELECT Matricola_DIP
+	FROM Rispetta R JOIN TURNO T ON R.Cod_Turno=T.Codice
+	WHERE TO_NUMBER(TO_CHAR(DATA_ORA_USCITA,'HH24.MI'),'99.99')- TO_NUMBER(TO_CHAR(Data_ora_ingresso,'HH24.MI'),'99.99')>= NUM_ORE - 0.60
+	GROUP BY Matricola_DIP
+	HAVING Matricola_DIP NOT IN 	( SELECT Matricola_DIP
+					FROM Rispetta R JOIN TURNO T ON R.Cod_Turno=T.Codice
+					WHERE TO_NUMBER(TO_CHAR(DATA_ORA_USCITA,'HH24.MI'),'99.99')- TO_NUMBER(TO_CHAR(Data_ora_ingresso,'HH24.MI'),'99.99')< NUM_ORE - 0.60
+					);
+
+BEGIN
+
+OPEN C1;
+LOOP
+FETCH C1 INTO Matricola_270;
+EXIT WHEN C1% NOTFOUND;
+UPDATE Contratto SET Stipendio = Stipendio + 100 
+WHERE Matricola_dipendente = Matricola_270 AND DATA_ASSUNZIONE<SYSDATE AND (Scadenza > SYSDATE OR Tipo = 'INDETERMINATO');
+END LOOP;
+CLOSE C1;
+
+DBMS_OUTPUT.PUT_LINE('Tutti i dipendenti che hanno lavorato nell''ultimo anno per piu'' di 270 giorni hanno ricevuto un aumento sullo stipendio di 100 euro!');
+
+OPEN C2;
+LOOP
+FETCH C2 INTO Matricola_punt;
+EXIT WHEN C2% NOTFOUND;
+UPDATE Contratto SET Stipendio = Stipendio + 50 
+WHERE Matricola_dipendente = Matricola_punt AND DATA_ASSUNZIONE<SYSDATE AND (Scadenza > SYSDATE OR Tipo = 'INDETERMINATO');
+END LOOP;
+CLOSE C2;
+
+DBMS_OUTPUT.PUT_LINE('Tutti i dipendenti che hanno rispettato sempre diligentemente il loro turno con meno di 20 minuti di ritardo, hanno ottenuto un bonus di 50 euro sullo stipendio! ');
+
+END;
+/
